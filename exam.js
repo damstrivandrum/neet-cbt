@@ -9,10 +9,20 @@
   ✅ FIX: iPhone Fullscreen overlay should NOT count as violation
   ✅ FIX: Wrong answers marking (MARKS_WRONG = -1 works correctly)
   ✅ FIX: Login/refresh should NOT reset timer or violations (per-candidate+window key)
-  ✅ REMOVED: Back-button blocking (NO history/popstate code)
 ***********************/
 
 function safeParse(s){ try{ return JSON.parse(s) }catch{ return null } }
+
+// ====== Candidate session ======
+const cand = safeParse(localStorage.getItem("neet_candidate") || "");
+if(!cand || !cand.token){
+  location.replace("login.html");
+}
+
+// ✅ HARD STOP: if already submitted, do not load exam
+if(localStorage.getItem("neet_submitted") === "yes"){
+  location.replace("result.html");
+}
 
 // ====== iOS fullscreen/overlay violation suppression ======
 let suppressVioUntil = 0;
@@ -23,21 +33,6 @@ function canCountViolation(){
   return Date.now() > suppressVioUntil;
 }
 const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-// ====== Candidate session ======
-const cand = safeParse(localStorage.getItem("neet_candidate") || "");
-if(!cand || !cand.token){
-  location.replace("login.html");
-}
-
-// If already submitted, go to result
-if(localStorage.getItem("neet_submitted") === "yes"){
-  location.replace("result.html");
-}
-
-// ❌ REMOVED: prevent back navigation during exam
-// history.replaceState(null, "", location.href);
-// window.addEventListener("popstate", () => history.pushState(null, "", location.href));
 
 // ====== IST Header (clock + schedule) ======
 const istClock   = document.getElementById("istClock");
@@ -52,15 +47,11 @@ if (istClock && window.formatIST) {
 
 if (examStartEl && Number.isFinite(window.EXAM_START_MS) && window.formatIST) {
   examStartEl.textContent = window.formatIST(window.EXAM_START_MS);
-} else if (examStartEl) {
-  examStartEl.textContent = "--";
-}
+} else if (examStartEl) examStartEl.textContent = "--";
 
 if (examEndEl && Number.isFinite(window.EXAM_END_MS) && window.formatIST) {
   examEndEl.textContent = window.formatIST(window.EXAM_END_MS);
-} else if (examEndEl) {
-  examEndEl.textContent = "--";
-}
+} else if (examEndEl) examEndEl.textContent = "--";
 
 // ====== Exam Window Lock (IST) ======
 function inWindow(now = Date.now()){
@@ -116,9 +107,7 @@ let Q = RAW.map((q, idx) => ({
   options: [...(q.options || [])]
 }));
 
-// Shuffle question order ONLY
 Q = seededShuffle(Q, "Q|" + seedKey);
-
 const totalQ = Q.length;
 
 // ====== Elements ======
@@ -137,9 +126,7 @@ const markBtn   = document.getElementById("markBtn");
 const submitBtn = document.getElementById("submitBtn");
 
 // ==============================
-// ✅ STORAGE KEY (FIXED)
-// - Per candidate + per exam window so login/refresh cannot reset attempt
-// - Migrates old global key once (neet_exam_state)
+// ✅ STORAGE KEY (Per candidate + exam window)
 // ==============================
 function buildStateKey(){
   const cid = String(cand?.candidateId || cand?.id || "guest");
@@ -154,16 +141,16 @@ const LEGACY_KEY = "neet_exam_state";
 const defaultState = () => ({
   startedAt: Date.now(),
   current: 0,
-  answers: {},     // qid -> optionIndex
-  marked: {},      // qid -> true/false
+  answers: {},
+  marked: {},
   violations: 0
 });
 
 // Load state (new key)
 let state = safeParse(localStorage.getItem(KEY) || "");
 
-// One-time migrate if needed
-if(!state){
+// One-time migrate if needed (ONLY if not submitted)
+if(!state && localStorage.getItem("neet_submitted") !== "yes"){
   const legacy = safeParse(localStorage.getItem(LEGACY_KEY) || "");
   if(legacy && typeof legacy === "object" && Number.isFinite(legacy.startedAt)){
     localStorage.setItem(KEY, JSON.stringify(legacy));
@@ -173,7 +160,7 @@ if(!state){
 
 if(!state) state = defaultState();
 
-// Hardening: never reset these on reload
+// Hardening
 if(!Number.isFinite(state.startedAt)) state.startedAt = Date.now();
 if(!Number.isFinite(state.violations)) state.violations = 0;
 if(!state.answers || typeof state.answers !== "object") state.answers = {};
@@ -188,30 +175,21 @@ function pad2(n){ return String(n).padStart(2,"0"); }
 
 let submitted = false;
 
-// ====== Scoring (✅ FIXED) ======
+// ====== Scoring ======
 function calcResult(){
   let correct = 0, wrong = 0, unattempted = 0;
-
   for(const q of Q){
     const picked = state.answers[q.id];
-    if(picked === undefined){
-      unattempted++;
-      continue;
-    }
+    if(picked === undefined){ unattempted++; continue; }
     if(Number(picked) === Number(q.answerIndex)) correct++;
     else wrong++;
   }
-
-  // Defaults: +4, -1
   const plus = Number.isFinite(window.MARKS_CORRECT) ? Number(window.MARKS_CORRECT) : 4;
-
-  // IMPORTANT: wrong mark should be NEGATIVE (e.g. -1)
   let wrongMark = Number.isFinite(window.MARKS_WRONG) ? Number(window.MARKS_WRONG) : -1;
   if (wrongMark > 0) wrongMark = -wrongMark;
 
   const score = (correct * plus) + (wrong * wrongMark);
   const timeTakenSec = Math.max(0, Math.floor((Date.now() - state.startedAt) / 1000));
-
   return { score, correct, wrong, unattempted, timeTakenSec };
 }
 
@@ -228,12 +206,9 @@ function updateTimer(){
 
   const mm = Math.floor(left/60000);
   const ss = Math.floor((left%60000)/1000);
-
   if (elTime) elTime.textContent = `${pad2(mm)}:${pad2(ss)}`;
 
-  if(left <= 0){
-    submitExam(true, "DURATION_ENDED");
-  }
+  if(left <= 0) submitExam(true, "DURATION_ENDED");
 }
 
 function palClass(qid){
@@ -263,7 +238,7 @@ function renderPalette(){
 }
 
 /* =======================
-   ✅ IMAGE MODAL (ZOOM)
+   IMAGE MODAL (ZOOM)
 ======================= */
 const imgModal    = document.getElementById("imgModal");
 const imgModalPic = document.getElementById("imgModalPic");
@@ -276,55 +251,44 @@ function openImgModal(src){
   imgModal.classList.add("show");
   imgModal.setAttribute("aria-hidden", "false");
 }
-
 function closeImgModal(){
   if(!imgModal) return;
   imgModal.classList.remove("show");
   imgModal.setAttribute("aria-hidden", "true");
 }
-
 if(imgCloseBtn) imgCloseBtn.addEventListener("click", closeImgModal);
-
 if(imgModal){
   imgModal.addEventListener("click", (e) => {
     if (e.target === imgModal) closeImgModal();
   });
 }
-
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeImgModal();
 });
-
 if(imgFullBtn){
   imgFullBtn.addEventListener("click", async () => {
-    suppressViolations(4000); // ✅ IMPORTANT (do not count fullscreen blur as violation)
+    suppressViolations(4000);
     try{
-      if (imgModalPic && imgModalPic.requestFullscreen) {
-        await imgModalPic.requestFullscreen();
-      } else if (imgModal && imgModal.requestFullscreen) {
-        await imgModal.requestFullscreen();
-      } else {
-        alert("Fullscreen not supported on this device/browser.");
-      }
+      if (imgModalPic && imgModalPic.requestFullscreen) await imgModalPic.requestFullscreen();
+      else if (imgModal && imgModal.requestFullscreen) await imgModal.requestFullscreen();
+      else alert("Fullscreen not supported on this device/browser.");
     }catch(err){
       alert("Fullscreen blocked: " + err.message);
     }
   });
 }
 
-// ====== Option select (instant palette update, iOS-safe) ======
+// ====== Answer helpers ======
 function setAnswer(qid, idx){
   state.answers[qid] = idx;
   save();
   renderPalette();
 }
-
 function clearAnswer(qid){
   delete state.answers[qid];
   save();
   renderPalette();
 }
-
 function toggleMark(qid){
   state.marked[qid] = !state.marked[qid];
   save();
@@ -410,7 +374,6 @@ if(prevBtn){
     }
   });
 }
-
 if(nextBtn){
   nextBtn.addEventListener("click", () => {
     if(state.current < totalQ - 1){
@@ -420,7 +383,6 @@ if(nextBtn){
     }
   });
 }
-
 if(clearBtn){
   clearBtn.addEventListener("click", () => {
     const q = Q[state.current];
@@ -429,7 +391,6 @@ if(clearBtn){
     render();
   });
 }
-
 if(markBtn){
   markBtn.addEventListener("click", () => {
     const q = Q[state.current];
@@ -438,7 +399,6 @@ if(markBtn){
     render();
   });
 }
-
 if(submitBtn){
   submitBtn.addEventListener("click", () => {
     if(confirm("Submit exam now?")){
@@ -447,9 +407,9 @@ if(submitBtn){
   });
 }
 
-// ====== Proctoring: tab-switch / blur ======
+// ====== Proctoring ======
 function addViolation(reason){
-  if(!canCountViolation()) return; // ✅ ignore during iOS fullscreen/system overlays
+  if(!canCountViolation()) return;
 
   state.violations = (state.violations || 0) + 1;
   save();
@@ -469,13 +429,12 @@ function addViolation(reason){
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") addViolation("TAB_SWITCH");
 });
-
 window.addEventListener("blur", () => {
-  if(IS_IOS) return; // skip noisy iOS blur
+  if(IS_IOS) return;
   addViolation("WINDOW_BLUR");
 });
 
-// ====== Submit helper (NO CORS preflight + timeout) ======
+// ====== Submit helper ======
 async function postAPI(payload){
   const API_URL = window.API_URL || window.EXAM_API_URL || "";
   if(!API_URL) throw new Error("API_URL not set in config.js");
@@ -503,7 +462,7 @@ async function postAPI(payload){
   }
 }
 
-// ====== Submit to Apps Script ======
+// ====== Submit ======
 async function submitExam(isAuto=false, reason="SUBMIT"){
   if(submitted) return;
   submitted = true;
@@ -527,13 +486,11 @@ async function submitExam(isAuto=false, reason="SUBMIT"){
       name: cand.name || "",
       phone: cand.phone || "",
       email: cand.email || "",
-
       score: r.score,
       correct: r.correct,
       wrong: r.wrong,
       unattempted: r.unattempted,
       timeTakenSec: r.timeTakenSec,
-
       startedAt: state.startedAt,
       endedAt: Date.now(),
       durationMin: (window.EXAM_DURATION_MIN || 60),
@@ -553,9 +510,11 @@ async function submitExam(isAuto=false, reason="SUBMIT"){
     if(data.ok === false){
       alert(data.error || data.message || "Submit failed");
       submitted = false;
+      try{ if(submitBtn) submitBtn.disabled = false; }catch{}
       return;
     }
 
+    // ✅ Lock submission locally
     localStorage.setItem("neet_submitted", "yes");
     localStorage.setItem("neet_result", JSON.stringify({
       name: cand.name || "",
@@ -568,8 +527,9 @@ async function submitExam(isAuto=false, reason="SUBMIT"){
       violations: state.violations || 0
     }));
 
-    // ✅ Clear only after SUCCESS submit
+    // ✅ Clear saved exam state only after success
     try{ localStorage.removeItem(KEY); }catch{}
+    try{ localStorage.removeItem(LEGACY_KEY); }catch{}
 
     location.replace("result.html");
 
