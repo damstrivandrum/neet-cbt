@@ -4,11 +4,6 @@
 window.questions = [
   // ===== Set 1 =====
 
- PYQ SURGERY GIT TRAUMA BURNS HBP
-
-
-
-
 
 [
   {
